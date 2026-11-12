@@ -1,0 +1,1256 @@
+if SERVER then return end
+
+local glowMat = Material("particle/Particle_Glow_04_Additive")
+local blurMat = Material("pp/blurscreen")
+local Pnl
+local OpenMenu
+local activeJob = 1
+local activeMdl = 1
+local activeCat = 1
+local activeCfg = 1
+local lastToggle = 0
+local NameSizes = {84, 72, 62, 54, 46, 40, 34}
+local NavList = {"РАБОТЫ", "МАГАЗИН", "КАСТОМИЗАЦИЯ"}
+local CfgFile = "elisium_f4_cfg2.json"
+local MenuFont = "Montserrat"
+local Logo1 = "ELISIUM"
+local Logo2 = "RP"
+local DonateCmd = "!donate"
+
+local AccPresets = {
+    {255, 138, 0}, {255, 59, 74}, {255, 105, 180}, {160, 90, 255}, {47, 107, 255},
+    {90, 220, 255}, {60, 200, 110}, {255, 200, 40}, {235, 235, 235}
+}
+
+local BgPresets = {
+    {0, 0, 0}, {4, 10, 24}, {20, 4, 6}, {4, 16, 8}, {12, 6, 22},
+    {22, 6, 14}, {4, 14, 20}, {18, 14, 2}, {12, 12, 12}
+}
+
+local Defaults = {
+    accent = {255, 138, 0},
+    bg = {0, 0, 0},
+    bgAlpha = 200,
+    dim = 0,
+    blur = true,
+    radius = 30,
+    cardAlpha = 60,
+    glow = true,
+    glowPower = 3.5,
+    scale = 1
+}
+
+local Cfg = table.Copy(Defaults)
+
+local function LoadCfg()
+    if not file.Exists(CfgFile, "DATA") then return end
+    local t = util.JSONToTable(file.Read(CfgFile, "DATA") or "")
+    if not istable(t) then return end
+    for k, v in pairs(Defaults) do
+        local n = t[k]
+        if istable(v) then
+            if istable(n) then
+                local c = {}
+                for i = 1, 3 do
+                    c[i] = math.Clamp(tonumber(n[i]) or v[i], 0, 255)
+                end
+                Cfg[k] = c
+            end
+        elseif type(n) == type(v) then
+            Cfg[k] = n
+        end
+    end
+    Cfg.scale = math.Clamp(Cfg.scale, 0.7, 1)
+    Cfg.radius = math.Clamp(Cfg.radius, 0, 30)
+end
+
+LoadCfg()
+
+local function SaveCfg()
+    timer.Create("ElisiumF4_Save", 0.4, 1, function()
+        file.Write(CfgFile, util.TableToJSON(Cfg))
+    end)
+end
+
+local PolyCache = {}
+local PolyCount = 0
+
+local function RBox(r, x, y, w, h, col)
+    w = math.Round(w)
+    h = math.Round(h)
+    if w <= 0 or h <= 0 then return end
+    local a = math.Clamp(col.a or 255, 0, 255)
+    if a <= 0 then return end
+    draw.NoTexture()
+    surface.SetDrawColor(col.r, col.g, col.b, a)
+    r = math.min(math.Round(r), math.floor(w / 2), math.floor(h / 2))
+    if r <= 0 then
+        surface.DrawRect(x, y, w, h)
+        return
+    end
+    local key = w .. ":" .. h .. ":" .. r
+    local e = PolyCache[key]
+    if not e then
+        if PolyCount > 800 then
+            PolyCache = {}
+            PolyCount = 0
+        end
+        local seg = math.Clamp(math.ceil(r / 2), 4, 20)
+        local corners = {
+            {r, r, 180},
+            {w - r, r, 270},
+            {w - r, h - r, 0},
+            {r, h - r, 90}
+        }
+        local base, out = {}, {}
+        for _, c in ipairs(corners) do
+            for i = 0, seg do
+                local ang = math.rad(c[3] + 90 * i / seg)
+                base[#base + 1] = {x = c[1] + math.cos(ang) * r, y = c[2] + math.sin(ang) * r}
+                out[#out + 1] = {x = 0, y = 0}
+            end
+        end
+        e = {base = base, out = out}
+        PolyCache[key] = e
+        PolyCount = PolyCount + 1
+    end
+    for i, v in ipairs(e.base) do
+        local o = e.out[i]
+        o.x = x + v.x
+        o.y = y + v.y
+    end
+    surface.DrawPoly(e.out)
+end
+
+local function Ease(t)
+    t = math.Clamp(t, 0, 1)
+    return 1 - (1 - t) ^ 3
+end
+
+local function EA(x, d)
+    return Ease(x / d)
+end
+
+local function Approach(cur, target, speed)
+    return Lerp(math.min(1, FrameTime() * speed), cur, target)
+end
+
+local function AC(a, hv)
+    hv = hv or 0
+    local c = Cfg.accent
+    return Color(Lerp(hv * 0.2, c[1], 255), Lerp(hv * 0.2, c[2], 255), Lerp(hv * 0.2, c[3], 255), a or 255)
+end
+
+local function OnAC()
+    local c = Cfg.accent
+    local lum = c[1] * 0.299 + c[2] * 0.587 + c[3] * 0.114
+    if lum > 150 then return Color(17, 17, 17) end
+    return Color(255, 255, 255)
+end
+
+local function BGC(a)
+    local c = Cfg.bg
+    return Color(c[1], c[2], c[3], a)
+end
+
+local function GetScl()
+    return math.min(ScrW() / 1920, ScrH() / 1080) * Cfg.scale
+end
+
+local function Fit(txt, font, maxw)
+    surface.SetFont(font)
+    if surface.GetTextSize(txt) <= maxw then return txt end
+    while (utf8.len(txt) or 0) > 1 and surface.GetTextSize(txt .. "…") > maxw do
+        txt = string.sub(txt, 1, utf8.offset(txt, -1) - 1)
+    end
+    return txt .. "…"
+end
+
+local function CanSee(v, pl)
+    local al = v.allowed
+    if isnumber(al) then return al == pl:Team() end
+    if istable(al) and #al > 0 then return table.HasValue(al, pl:Team()) end
+    return true
+end
+
+local function IsLocked(v, pl)
+    if not v.customCheck then return false end
+    local ok, res = pcall(v.customCheck, pl)
+    return ok and not res
+end
+
+local function GetMoney()
+    local pl = LocalPlayer()
+    if pl.getDarkRPVar then return pl:getDarkRPVar("money") or 0 end
+    return 0
+end
+
+local function MoneyStr(n)
+    return DarkRP and DarkRP.formatMoney(n) or ("$" .. n)
+end
+
+local function BuildShopData()
+    local pl = LocalPlayer()
+    local cats = {}
+    local function add(name, col, items)
+        if #items > 0 then
+            cats[#cats + 1] = {name = name, color = col, items = items}
+        end
+    end
+    local ents = {}
+    for _, v in ipairs(DarkRPEntities or {}) do
+        if CanSee(v, pl) then
+            ents[#ents + 1] = {
+                name = v.name,
+                model = v.model,
+                price = v.price or 0,
+                locked = IsLocked(v, pl),
+                info = (v.max and v.max > 0) and ("Лимит: " .. v.max) or nil,
+                act = function() RunConsoleCommand("DarkRP", v.cmd) end
+            }
+        end
+    end
+    add("ПРЕДМЕТЫ", Color(255, 138, 0), ents)
+
+    local guns = {}
+    for _, v in ipairs(CustomShipments or {}) do
+        if v.separate and v.pricesep and CanSee(v, pl) then
+            guns[#guns + 1] = {
+                name = v.name,
+                model = v.model,
+                price = v.pricesep,
+                locked = IsLocked(v, pl),
+                info = "Одна штука",
+                act = function() RunConsoleCommand("DarkRP", "buy", v.name) end
+            }
+        end
+    end
+    add("ОРУЖИЕ", Color(47, 107, 255), guns)
+
+    local ships = {}
+    for _, v in ipairs(CustomShipments or {}) do
+        if not v.noship and CanSee(v, pl) then
+            ships[#ships + 1] = {
+                name = v.name,
+                model = v.model,
+                price = v.price or 0,
+                locked = IsLocked(v, pl),
+                info = "Ящик x" .. (v.amount or 1),
+                act = function() RunConsoleCommand("DarkRP", "buyshipment", v.name) end
+            }
+        end
+    end
+    add("ЯЩИКИ", Color(60, 200, 110), ships)
+
+    local vehs = {}
+    for _, v in ipairs(CustomVehicles or {}) do
+        if CanSee(v, pl) then
+            vehs[#vehs + 1] = {
+                name = v.name,
+                model = v.model,
+                price = v.price or 0,
+                locked = IsLocked(v, pl),
+                info = "Транспорт",
+                act = function() RunConsoleCommand("DarkRP", "buyvehicle", v.name) end
+            }
+        end
+    end
+    add("ТРАНСПОРТ", Color(160, 90, 255), vehs)
+
+    local ammo = {}
+    local gm = GAMEMODE or GM
+    for key, v in pairs(gm and gm.AmmoTypes or {}) do
+        ammo[#ammo + 1] = {
+            name = v.name,
+            model = v.model,
+            price = v.price or 0,
+            locked = IsLocked(v, pl),
+            info = v.amountGiven and ("Патронов: " .. v.amountGiven) or nil,
+            act = function() RunConsoleCommand("DarkRP", "buyammo", v.ammoType or key) end
+        }
+    end
+    table.sort(ammo, function(a, b) return a.name < b.name end)
+    add("ПАТРОНЫ", Color(255, 74, 74), ammo)
+
+    return cats
+end
+
+local function CreateFonts()
+    local scl = GetScl()
+    local function F(id, rs, w)
+        surface.CreateFont("E_" .. id, {font = MenuFont, size = math.max(1, math.Round(rs * scl)), weight = w, extended = true, antialias = true})
+    end
+    F("logo", 84, 900)
+    F("nav", 18, 700)
+    F("donate", 30, 900)
+    F("badge", 24, 900)
+    F("close", 32, 600)
+    F("cat", 24, 700)
+    F("val", 48, 900)
+    F("lbl", 22, 600)
+    F("eqt", 20, 700)
+    F("eq", 24, 600)
+    F("job", 20, 700)
+    F("slot", 18, 600)
+    F("tag", 14, 800)
+    F("model", 28, 700)
+    F("take", 34, 900)
+    F("enter", 22, 800)
+    F("item", 28, 800)
+    F("price", 32, 900)
+    F("info", 22, 600)
+    F("buy", 20, 900)
+    F("bal", 26, 800)
+    F("empty", 30, 700)
+    for i, sz in ipairs(NameSizes) do
+        F("nm" .. i, sz, 900)
+    end
+end
+
+local function CloseMenu()
+    if not IsValid(Pnl) or Pnl.closing then return end
+    Pnl.closing = true
+end
+
+local function TakeJob()
+    if not IsValid(Pnl) or Pnl.closing then return end
+    local j = RPExtraTeams[activeJob]
+    if j and j.command then
+        LocalPlayer():ConCommand("say /" .. j.command)
+    end
+    CloseMenu()
+end
+
+local function Rebuild()
+    if IsValid(Pnl) and not Pnl.closing then
+        OpenMenu(Pnl.tabNow or 1, true)
+    end
+end
+
+OpenMenu = function(startTab, instant)
+    if not RPExtraTeams or #RPExtraTeams == 0 then return end
+    if IsValid(Pnl) then Pnl:Remove() end
+    CreateFonts()
+
+    local scl = GetScl()
+    local ox = (ScrW() - 1920 * scl) / 2
+    local oy = (ScrH() - 1080 * scl) / 2
+    local function S(v) return math.Round(v * scl) end
+    local function X(v) return ox + math.Round(v * scl) end
+    local function Y(v) return oy + math.Round(v * scl) end
+    local function R() return S(Cfg.radius) end
+
+    if not RPExtraTeams[activeJob] then activeJob = 1 end
+    local shopData = BuildShopData()
+    if activeCat > #shopData then activeCat = 1 end
+
+    local base = instant and (SysTime() - 10) or SysTime()
+    local tab = startTab or 1
+    local tabF = tab
+    local jobAnim = base + 0.25
+    local mdlAnim = base + 0.15
+    local shopAnim = base
+    local custAnim = base
+    local dispSal = 0
+    local eqCache = {}
+    local c0 = RPExtraTeams[activeJob].color or Color(47, 107, 255)
+    local gc = {r = c0.r, g = c0.g, b = c0.b}
+
+    local FillShop, BuildCust
+
+    local function JA(d)
+        return Ease((SysTime() - jobAnim - d) / 0.5)
+    end
+
+    local function W(i)
+        return math.Clamp(1 - math.abs(tabF - i), 0, 1)
+    end
+
+    local function GetEq(j, idx)
+        if eqCache[idx] then return eqCache[idx] end
+        local t = {}
+        if j.weapons then
+            for _, w in ipairs(j.weapons) do
+                local sw = weapons.GetStored(w)
+                t[#t + 1] = (sw and sw.PrintName) and sw.PrintName or w
+            end
+        end
+        eqCache[idx] = t
+        return t
+    end
+
+    local function StyleScroll(sp)
+        local sbar = sp:GetVBar()
+        sbar:SetWide(S(6))
+        sbar:SetHideButtons(true)
+        sbar.Paint = function(s, w, h)
+            RBox(w/2, 0, 0, w, h, Color(0, 0, 0, 150))
+        end
+        sbar.btnUp.Paint = function() end
+        sbar.btnDown.Paint = function() end
+        sbar.btnGrip.Paint = function(s, w, h)
+            local c = Cfg.accent
+            RBox(w/2, 0, 0, w, h, Color(c[1], c[2], c[3]))
+        end
+    end
+
+    local function SmoothScroll(sp)
+        sp.target = 0
+        sp.OnMouseWheeled = function(s, d)
+            local mx = math.max(0, s:GetCanvas():GetTall() - s:GetTall())
+            s.target = math.Clamp(s.target - d * S(90), 0, mx)
+            return true
+        end
+        sp.Think = function(s)
+            local bar = s:GetVBar()
+            local cur = bar:GetScroll()
+            if math.abs(cur - s.target) > 0.5 then
+                bar:SetScroll(Lerp(math.min(1, FrameTime() * 12), cur, s.target))
+            elseif cur ~= s.target then
+                bar:SetScroll(s.target)
+            end
+        end
+    end
+
+    local pnl = vgui.Create("EditablePanel")
+    Pnl = pnl
+    pnl:SetSize(ScrW(), ScrH())
+    pnl:MakePopup()
+    pnl:SetKeyboardInputEnabled(true)
+    pnl:SetAlpha(instant and 255 or 0)
+    pnl.t = instant and 1 or 0
+    pnl.e = instant and 1 or 0
+    pnl.t0 = base
+    pnl.closing = false
+    pnl.tabNow = tab
+
+    local jobPnl = vgui.Create("DPanel", pnl)
+    jobPnl:SetSize(ScrW(), ScrH())
+    jobPnl:SetPos(0, 0)
+    jobPnl.Paint = function() end
+
+    local shopPnl = vgui.Create("DPanel", pnl)
+    shopPnl:SetSize(ScrW(), ScrH())
+    shopPnl:SetPos(0, 0)
+    shopPnl:SetAlpha(0)
+    shopPnl:SetVisible(false)
+    shopPnl.Paint = function(s, w, h)
+        local a = EA(SysTime() - shopAnim - 0.3, 0.5)
+        local rxp = X(1590)
+        draw.SimpleText("БАЛАНС", "E_info", rxp, Y(78), Color(255, 255, 255, 114 * a), 2, 1)
+        draw.SimpleText(MoneyStr(GetMoney()), "E_bal", rxp, Y(107), AC(255 * a), 2, 1)
+        if #shopData == 0 then
+            draw.SimpleText("Магазин пуст", "E_empty", X(1190), Y(520), Color(255, 255, 255, 140 * a), 1, 1)
+        end
+    end
+
+    local custPnl = vgui.Create("DPanel", pnl)
+    custPnl:SetSize(ScrW(), ScrH())
+    custPnl:SetPos(0, 0)
+    custPnl:SetAlpha(0)
+    custPnl:SetVisible(false)
+    custPnl.Paint = function() end
+
+    local navX, navW, navBtns = {}, {}, {}
+
+    local function LayoutNav()
+        surface.SetFont("E_logo")
+        local lw = surface.GetTextSize(Logo1 .. " ")
+        local rw = surface.GetTextSize(Logo2)
+        local cx = X(96) + lw + rw + S(80)
+        surface.SetFont("E_nav")
+        for i, nv in ipairs(NavList) do
+            local w = surface.GetTextSize(nv)
+            navX[i] = cx
+            navW[i] = w
+            local b = navBtns[i]
+            if IsValid(b) then
+                b:SetPos(cx - S(10), Y(95) - S(24))
+                b:SetSize(w + S(20), S(48))
+            end
+            cx = cx + w + S(50)
+        end
+    end
+
+    local function SetTab(i)
+        if tab == i or pnl.closing then return end
+        tab = i
+        pnl.tabNow = i
+        if i == 1 then
+            jobAnim = SysTime()
+            mdlAnim = SysTime()
+        elseif i == 2 then
+            shopAnim = SysTime()
+            FillShop()
+        elseif i == 3 then
+            custAnim = SysTime()
+            BuildCust(activeCfg)
+        end
+    end
+
+    pnl.OnKeyCodePressed = function(s, k)
+        if k == KEY_ENTER then
+            if tab == 1 then TakeJob() end
+        elseif k == KEY_F4 then
+            if CurTime() < lastToggle then return end
+            lastToggle = CurTime() + 0.25
+            CloseMenu()
+        end
+    end
+
+    pnl.Paint = function(s, w, h)
+        local sc = Lerp(s.e, 0.88, 1)
+        local bw, bh = S(1832) * sc, S(992) * sc
+        local bx = w / 2 - bw / 2
+        local by = (h / 2 + (1 - s.e) * S(26)) - bh / 2
+
+        if Cfg.blur then
+            render.SetScissorRect(bx, by, bx + bw, by + bh, true)
+            surface.SetDrawColor(255, 255, 255, 255)
+            surface.SetMaterial(blurMat)
+            for i = 1, 3 do
+                blurMat:SetFloat("$blur", i * 2 * s.e)
+                blurMat:Recompute()
+                render.UpdateScreenEffectTexture()
+                surface.DrawTexturedRect(0, 0, w, h)
+            end
+            render.SetScissorRect(0, 0, 0, 0, false)
+        end
+
+        local e = s.e
+        local m = Matrix()
+        m:Translate(Vector(w / 2, h / 2 + (1 - e) * S(26), 0))
+        m:Scale(Vector(sc, sc, 1))
+        m:Translate(Vector(-w / 2, -h / 2, 0))
+        cam.PushModelMatrix(m)
+
+        local w1 = W(1)
+        
+        if Cfg.glow and w1 > 0.01 then
+            local br = math.sin(CurTime() * 1.6) * 0.5 + 0.5
+            local gw = S(1400)
+            surface.SetMaterial(glowMat)
+            surface.SetDrawColor(gc.r, gc.g, gc.b, math.min(255, (100 + 50 * br) * Cfg.glowPower * w1))
+            surface.DrawTexturedRect(X(960) - gw / 2, Y(540) - gw / 2, gw, gw)
+        end
+
+        RBox(R(), X(44), Y(44), S(1832), S(992), BGC(Cfg.bgAlpha))
+        RBox(R(), X(50), Y(50), S(1820), S(980), BGC(Cfg.bgAlpha))
+
+        local t = SysTime() - s.t0
+        local la = EA(t - 0.05, 0.5)
+        local lx = X(96) - (1 - la) * S(40)
+        surface.SetFont("E_logo")
+        local lw = surface.GetTextSize(Logo1 .. " ")
+        draw.SimpleText(Logo1 .. " ", "E_logo", lx, Y(95), Color(255, 255, 255, 255 * la), 0, 1)
+        draw.SimpleText(Logo2, "E_logo", lx + lw, Y(95), AC(255 * la), 0, 1)
+
+        for i, nv in ipairs(NavList) do
+            local nw = navW[i]
+            local nxp = navX[i]
+            local na = EA(t - 0.12 - i * 0.06, 0.5)
+            local ny = Y(95) - (1 - na) * S(14)
+            local hv = navBtns[i] and navBtns[i].hv or 0
+            local base255 = 165
+            if i <= 3 then base255 = 165 + 90 * W(i) end
+            local al = base255 + (255 - base255) * hv
+            draw.SimpleText(nv, "E_nav", nxp, ny, Color(255, 255, 255, al * na), 0, 1)
+        end
+
+        local ui = math.Clamp(math.floor(tabF), 1, #NavList - 1)
+        local fr = tabF - ui
+        local ux = Lerp(fr, navX[ui], navX[ui + 1])
+        local uw = Lerp(fr, navW[ui], navW[ui + 1]) * EA(t - 0.5, 0.6)
+        local uc = AC(255)
+        surface.SetDrawColor(uc.r, uc.g, uc.b, 255)
+        surface.DrawRect(ux, Y(112), uw, S(3))
+
+        local j = RPExtraTeams[activeJob]
+        local tc = (j and j.color) or Color(47, 107, 255)
+        gc.r = Approach(gc.r, tc.r, 6)
+        gc.g = Approach(gc.g, tc.g, 6)
+        gc.b = Approach(gc.b, tc.b, 6)
+
+        if j and w1 > 0.01 then
+            local amb = surface.GetAlphaMultiplier()
+            surface.SetAlphaMultiplier(amb * w1)
+
+            local rx = X(1380)
+            local ry = Y(165)
+            local function Ox(a) return (1 - a) * S(40) end
+
+            local a1 = JA(0)
+            local catStr = j.category or "Без категории"
+            surface.SetFont("E_cat")
+            local cw = surface.GetTextSize(catStr)
+            local bh = S(48)
+            RBox(R(), rx + Ox(a1), ry, cw + S(40), bh, Color(255, 255, 255, 25 * a1))
+            draw.SimpleText(catStr, "E_cat", rx + S(20) + Ox(a1), ry + bh / 2, Color(255, 255, 255, 255 * a1), 0, 1)
+
+            local a2 = JA(0.06)
+            local nameStr = string.upper(j.name)
+            local nf = "E_nm" .. #NameSizes
+            for i = 1, #NameSizes do
+                surface.SetFont("E_nm" .. i)
+                if surface.GetTextSize(nameStr) <= S(470) then
+                    nf = "E_nm" .. i
+                    break
+                end
+            end
+            draw.SimpleText(nameStr, nf, rx + Ox(a2), ry + S(118), Color(255, 255, 255, 255 * a2), 0, 1)
+
+            local salary = j.salary or 0
+            dispSal = Approach(dispSal, salary, 8)
+            if math.abs(dispSal - salary) < 1 then dispSal = salary end
+            local curStr = MoneyStr(math.Round(dispSal))
+            local finalSal = MoneyStr(salary)
+
+            surface.SetFont("E_val")
+            local svw = surface.GetTextSize(finalSal)
+            surface.SetFont("E_lbl")
+            local slw = surface.GetTextSize("Зарплата")
+            local slotX = rx + math.max(svw, slw) + S(40)
+
+            local cPl = team.NumPlayers(j.team)
+            local mPl = j.max == 0 and "∞" or j.max
+            local slStr = cPl .. " / " .. mPl
+            surface.SetFont("E_val")
+            local sw1 = surface.GetTextSize(slStr)
+            surface.SetFont("E_lbl")
+            local sw2 = surface.GetTextSize("Слоты")
+            local lineW = (slotX - rx) + math.max(sw1, sw2)
+
+            local a3 = JA(0.12)
+            draw.SimpleText(curStr, "E_val", rx + Ox(a3), ry + S(165), Color(255, 255, 255, 255 * a3), 0, 0)
+            draw.SimpleText("Зарплата", "E_lbl", rx + Ox(a3), ry + S(215), Color(255, 255, 255, 102 * a3), 0, 0)
+
+            local a4 = JA(0.18)
+            draw.SimpleText(slStr, "E_val", slotX + Ox(a4), ry + S(165), Color(255, 255, 255, 255 * a4), 0, 0)
+            draw.SimpleText("Слоты", "E_lbl", slotX + Ox(a4), ry + S(215), Color(255, 255, 255, 102 * a4), 0, 0)
+
+            local a5 = JA(0.24)
+            surface.SetDrawColor(255, 255, 255, 35 * a5)
+            surface.DrawRect(rx, ry + S(250), lineW * a5, S(2))
+
+            local a6 = JA(0.3)
+            draw.SimpleText("СНАРЯЖЕНИЕ", "E_eqt", rx + Ox(a6), ry + S(275), Color(255, 255, 255, 114 * a6), 0, 0)
+
+            local eqList = GetEq(j, activeJob)
+            local half = math.max(1, math.ceil(#eqList / 2))
+            surface.SetFont("E_eq")
+            local c1w = 0
+            for k = 1, math.min(half, #eqList) do
+                c1w = math.max(c1w, surface.GetTextSize(eqList[k]))
+            end
+            local eqx1 = rx
+            local eqx2 = rx + S(26) + c1w + S(40)
+            local eqy = ry + S(315)
+
+            for k, eq in ipairs(eqList) do
+                local ea = JA(0.36 + k * 0.05)
+                local cx = k <= half and eqx1 or eqx2
+                local cy = eqy + ((k - 1) % half) * S(38)
+                local exo = Ox(ea)
+                RBox(512, cx + exo, cy + S(14) - S(5), S(10), S(10), AC(255 * ea))
+                draw.SimpleText(eq, "E_eq", cx + S(26) + exo, cy + S(14), Color(255, 255, 255, 255 * ea), 0, 1)
+            end
+            surface.SetAlphaMultiplier(amb)
+        end
+    end
+
+    pnl.PaintOver = function()
+        cam.PopModelMatrix()
+    end
+
+    local scroll = vgui.Create("DScrollPanel", jobPnl)
+    scroll:SetSize(S(430), S(780))
+    scroll:SetPos(X(100), Y(160))
+    StyleScroll(scroll)
+    SmoothScroll(scroll)
+
+    local mdl = vgui.Create("DModelPanel", jobPnl)
+    mdl:SetSize(S(700), S(750))
+    mdl:SetPos(X(610), Y(160))
+    mdl.LayoutEntity = function(s, ent)
+        ent:SetAngles(Angle(0, 0, 0))
+    end
+
+    local function UpdateMdl()
+        local j = RPExtraTeams[activeJob]
+        if not j then return end
+        local mdls = istable(j.model) and j.model or {j.model}
+        if not mdls[activeMdl] then activeMdl = 1 end
+        mdl:SetModel(mdls[activeMdl] or "models/player/Group01/male_01.mdl")
+        local ent = mdl:GetEntity()
+        if IsValid(ent) then
+            local mn, mx = ent:GetRenderBounds()
+            local hz = (mn.z + mx.z) / 2
+            mdl:SetCamPos(Vector(110, 0, hz))
+            mdl:SetLookAt(Vector(0, 0, hz))
+            mdl:SetFOV(40)
+        end
+        mdlAnim = SysTime()
+    end
+
+    for k, j in ipairs(RPExtraTeams) do
+        local btn = scroll:Add("DButton")
+        btn:SetText("")
+        btn:Dock(TOP)
+        btn:SetTall(S(65))
+        btn:DockMargin(0, 0, S(10), 0)
+        btn.born = base + 0.2 + math.min(k, 12) * 0.045
+        btn.DoClick = function()
+            if activeJob == k then return end
+            activeJob = k
+            activeMdl = 1
+            jobAnim = SysTime()
+            UpdateMdl()
+        end
+        btn.Paint = function(s, w, h)
+            s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+            s.sl = Approach(s.sl or 0, activeJob == k and 1 or 0, 10)
+            local act = math.max(s.hv, s.sl)
+            local op = 153 + 102 * act
+            local a = EA(SysTime() - s.born, 0.45)
+            local o = -(1 - a) * S(40)
+            local jc = j.color or Color(255, 255, 255)
+
+            local d = S(16) + S(4) * s.sl
+            RBox(512, o + S(10) - d / 2, h / 2 - d / 2, d, d, Color(jc.r, jc.g, jc.b, op * a))
+            draw.SimpleText(j.name, "E_job", o + S(36) + S(6) * act, h / 2, Color(255, 255, 255, op * a), 0, 1)
+
+            local cPl = team.NumPlayers(j.team)
+            local mPl = j.max == 0 and "∞" or j.max
+            local isFull = j.max > 0 and cPl >= j.max
+            local slotStr = cPl .. "/" .. mPl
+
+            local px = w - S(10) + o
+            local scol = isFull and Color(255, 74, 74, op * a) or Color(255, 255, 255, op * 0.75 * a)
+            draw.SimpleText(slotStr, "E_slot", px, h / 2, scol, 2, 1)
+            surface.SetFont("E_slot")
+            local sw = surface.GetTextSize(slotStr)
+            px = px - sw - S(20)
+
+            if j.customCheck and not j.customCheck(LocalPlayer()) then
+                surface.SetFont("E_tag")
+                local tw = surface.GetTextSize("VIP")
+                RBox(R(), px - tw - S(16), h / 2 - S(11), tw + S(16), S(22), Color(120, 140, 255, math.min(op, 71) * a))
+                draw.SimpleText("VIP", "E_tag", px - S(8), h / 2, Color(170, 182, 255, op * a), 2, 1)
+            end
+        end
+    end
+
+    UpdateMdl()
+    mdlAnim = base + 0.15
+
+    local mt = vgui.Create("DPanel", jobPnl)
+    mt:SetSize(S(400), S(50))
+    mt:SetPos(X(760), Y(875))
+    mt.Paint = function(s, w, h)
+        local j = RPExtraTeams[activeJob]
+        if not j then return end
+        local mdls = istable(j.model) and j.model or {j.model}
+        local txt = "Модель " .. activeMdl .. " / " .. #mdls
+        draw.SimpleText(txt, "E_model", w / 2, h / 2, Color(255, 255, 255, 220), 1, 1)
+    end
+
+    local function ArrowBtn(dir, x, cb)
+        local b = vgui.Create("DButton", mt)
+        b:SetText("")
+        b:SetSize(S(50), S(50))
+        b:SetPos(x, 0)
+        b.Paint = function(s, w, h)
+            s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+            s.pr = Approach(s.pr or 0, s:IsDown() and 1 or 0, 22)
+            local t = S(14) * (1 + 0.15 * s.hv) * (1 - 0.2 * s.pr)
+            local cx = w / 2 + dir * S(3) * s.hv
+            local cy = h / 2
+            local pts
+            if dir < 0 then
+                pts = {
+                    {x = cx - t * 0.7, y = cy},
+                    {x = cx + t * 0.5, y = cy - t},
+                    {x = cx + t * 0.5, y = cy + t}
+                }
+            else
+                pts = {
+                    {x = cx + t * 0.7, y = cy},
+                    {x = cx - t * 0.5, y = cy + t},
+                    {x = cx - t * 0.5, y = cy - t}
+                }
+            end
+            draw.NoTexture()
+            surface.SetDrawColor(255, 255, 255, 170 + 85 * s.hv)
+            surface.DrawPoly(pts)
+        end
+        b.DoClick = cb
+        return b
+    end
+
+    ArrowBtn(-1, S(70), function()
+        local j = RPExtraTeams[activeJob]
+        if not j then return end
+        local mdls = istable(j.model) and j.model or {j.model}
+        activeMdl = activeMdl <= 1 and #mdls or activeMdl - 1
+        UpdateMdl()
+    end)
+
+    ArrowBtn(1, S(280), function()
+        local j = RPExtraTeams[activeJob]
+        if not j then return end
+        local mdls = istable(j.model) and j.model or {j.model}
+        activeMdl = activeMdl >= #mdls and 1 or activeMdl + 1
+        UpdateMdl()
+    end)
+
+    local take = vgui.Create("DButton", jobPnl)
+    take:SetText("")
+    take:SetSize(S(420), S(80))
+    take:SetPos(X(1380), Y(845))
+    take.DoClick = function() TakeJob() end
+    take.Paint = function(s, w, h)
+        s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+        RBox(R(), 0, 0, w, h, AC(255, s.hv))
+        local fg = OnAC()
+        local ft = fg.r < 100 and Color(255, 255, 255) or Color(17, 17, 17)
+
+        surface.SetFont("E_take")
+        local tw = surface.GetTextSize("ВЗЯТЬ")
+        surface.SetFont("E_enter")
+        local ew = surface.GetTextSize("ENTER")
+        local bw, bh = ew + S(28), S(46)
+        local gap = S(16)
+        local total = tw + gap + bw
+        local sx = (w - total) / 2 + S(3) * s.hv
+
+        draw.SimpleText("ВЗЯТЬ", "E_take", sx, h / 2, fg, 0, 1)
+        RBox(R(), sx + tw + gap, h / 2 - bh / 2, bw, bh, fg)
+        draw.SimpleText("ENTER", "E_enter", sx + tw + gap + bw / 2, h / 2, ft, 1, 1)
+    end
+
+    local function SideList(parent, entries, getActive, onClick, getBase)
+        local sp = vgui.Create("DScrollPanel", parent)
+        sp:SetSize(S(430), S(780))
+        sp:SetPos(X(100), Y(160))
+        StyleScroll(sp)
+        SmoothScroll(sp)
+        for i, en in ipairs(entries) do
+            local cb = sp:Add("DButton")
+            cb:SetText("")
+            cb:Dock(TOP)
+            cb:SetTall(S(65))
+            cb:DockMargin(0, 0, S(10), 0)
+            cb.DoClick = function()
+                if getActive() == i then return end
+                onClick(i)
+            end
+            cb.Paint = function(s, w, h)
+                s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+                s.sl = Approach(s.sl or 0, getActive() == i and 1 or 0, 10)
+                local act = math.max(s.hv, s.sl)
+                local op = 153 + 102 * act
+                local a = EA(SysTime() - getBase() - math.min(i, 12) * 0.05, 0.45)
+                local o = -(1 - a) * S(40)
+                local c = en.color or AC(255)
+                local d = S(16) + S(4) * s.sl
+                RBox(512, o + S(10) - d / 2, h / 2 - d / 2, d, d, Color(c.r, c.g, c.b, op * a))
+                draw.SimpleText(en.name, "E_job", o + S(36) + S(6) * act, h / 2, Color(255, 255, 255, op * a), 0, 1)
+                if en.count then
+                    draw.SimpleText(tostring(en.count), "E_slot", w - S(10) + o, h / 2, Color(255, 255, 255, op * 0.75 * a), 2, 1)
+                end
+            end
+        end
+    end
+
+    local shopScroll = vgui.Create("DScrollPanel", shopPnl)
+    shopScroll:SetSize(S(1270), S(780))
+    shopScroll:SetPos(X(560), Y(160))
+    StyleScroll(shopScroll)
+    SmoothScroll(shopScroll)
+
+    local lay = vgui.Create("DIconLayout", shopScroll)
+    lay:Dock(TOP)
+    lay:DockMargin(0, 0, S(10), S(10))
+    lay:SetSpaceX(S(20))
+    lay:SetSpaceY(S(16))
+
+    FillShop = function()
+        lay:Clear()
+        shopScroll.target = 0
+        shopScroll:GetVBar():SetScroll(0)
+        local cat = shopData[activeCat]
+        if not cat then return end
+
+        for i, it in ipairs(cat.items) do
+            local cw, ch = S(610), S(150)
+            local bw, bh = S(160), S(54)
+            local card = lay:Add("DPanel")
+            card:SetSize(cw, ch)
+            card.Paint = function() end
+            card.born = SysTime() + 0.05 + math.min(i, 8) * 0.05
+
+            local inner = vgui.Create("DPanel", card)
+            inner:SetSize(cw, ch)
+
+            card.Think = function(s)
+                local a = EA(SysTime() - s.born, 0.4)
+                s:SetAlpha(255 * a)
+                inner:SetPos((1 - a) * S(40), 0)
+            end
+
+            local tx = S(158)
+            local nm = Fit(it.name or "?", "E_item", cw - tx - bw - S(40))
+            local priceStr = MoneyStr(it.price)
+
+            inner.Paint = function(s, w, h)
+                s.hv = Approach(s.hv or 0, (s:IsHovered() or s:IsChildHovered()) and 1 or 0, 14)
+                s.fl = math.max(0, (s.fl or 0) - FrameTime() * 2.5)
+                RBox(R(), 0, 0, w, h, Color(0, 0, 0, math.min(255, Cfg.cardAlpha + 40 * s.hv)))
+                if s.fl > 0 then
+                    RBox(R(), 0, 0, w, h, AC(60 * s.fl))
+                end
+                draw.SimpleText(nm, "E_item", tx, S(46), Color(255, 255, 255), 0, 1)
+                if it.info then
+                    draw.SimpleText(it.info, "E_info", tx, S(78), Color(255, 255, 255, 120), 0, 1)
+                end
+                draw.SimpleText(priceStr, "E_price", tx, S(110), Color(46, 204, 113), 0, 1)
+            end
+
+            local ic = vgui.Create("SpawnIcon", inner)
+            ic:SetPos(S(14), S(14))
+            ic:SetSize(S(122), S(122))
+            ic:SetModel(it.model or "models/props_junk/cardboard_box001a.mdl")
+            ic:SetMouseInputEnabled(false)
+
+            local buy = vgui.Create("DButton", inner)
+            buy:SetText("")
+            buy:SetSize(bw, bh)
+            buy:SetPos(cw - bw - S(20), (ch - bh) / 2)
+            buy.Paint = function(s, w, h)
+                s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+                local poor = GetMoney() < it.price
+                if it.locked or poor then
+                    RBox(R(), 0, 0, w, h, Color(255, 255, 255, 18))
+                    draw.SimpleText(it.locked and "ЗАКРЫТО" or "НЕТ ДЕНЕГ", "E_buy", w / 2, h / 2, Color(255, 255, 255, 130), 1, 1)
+                else
+                    RBox(R(), 0, 0, w, h, AC(255, s.hv))
+                    draw.SimpleText("КУПИТЬ", "E_buy", w / 2, h / 2, OnAC(), 1, 1)
+                end
+            end
+            buy.DoClick = function()
+                if it.locked or GetMoney() < it.price then return end
+                it.act()
+                inner.fl = 1
+            end
+        end
+    end
+
+    local shopEntries = {}
+    for i, cat in ipairs(shopData) do
+        shopEntries[i] = {name = cat.name, color = cat.color, count = #cat.items}
+    end
+
+    SideList(shopPnl, shopEntries, function() return activeCat end, function(i)
+        activeCat = i
+        FillShop()
+    end, function() return shopAnim end)
+
+    local custScroll = vgui.Create("DScrollPanel", custPnl)
+    custScroll:SetSize(S(1270), S(780))
+    custScroll:SetPos(X(560), Y(160))
+    StyleScroll(custScroll)
+    SmoothScroll(custScroll)
+
+    local custBase = base
+    local rowN = 0
+
+    local function NewRow(h)
+        rowN = rowN + 1
+        local row = custScroll:Add("DPanel")
+        row:Dock(TOP)
+        row:DockMargin(0, 0, S(10), S(12))
+        row:SetTall(S(h))
+        row.born = custBase + rowN * 0.05
+        row.Think = function(s)
+            local a = EA(SysTime() - s.born, 0.4)
+            s:SetAlpha(255 * a)
+            if a < 1 then
+                s:DockMargin((1 - a) * S(40), 0, S(10), S(12))
+                s.mv = true
+            elseif s.mv then
+                s:DockMargin(0, 0, S(10), S(12))
+                s.mv = false
+            end
+        end
+        row.Paint = function(s, w, hh)
+            RBox(R(), 0, 0, w, hh, Color(0, 0, 0, Cfg.cardAlpha))
+            if s.Draw then s.Draw(s, w, hh) end
+        end
+        return row
+    end
+
+    local function FInt(v) return tostring(math.Round(v)) end
+    local function FPct(v) return math.Round(v / 255 * 100) .. "%" end
+    local function FX(v) return string.format("%.1fx", v) end
+    local function FScale(v) return math.Round(v * 100) .. "%" end
+    local function FPx(v) return math.Round(v) .. " px" end
+
+    local function ToggleRow(label, get, set)
+        local row = NewRow(76)
+        local sw = vgui.Create("DButton", row)
+        sw:SetText("")
+        sw:SetSize(S(84), S(42))
+        row.PerformLayout = function(s, w, h)
+            sw:SetPos(w - S(84) - S(30), (h - S(42)) / 2)
+        end
+        row.Draw = function(s, w, h)
+            draw.SimpleText(label, "E_item", S(30), h / 2, Color(255, 255, 255), 0, 1)
+        end
+        sw.Paint = function(s, w, h)
+            s.v = Approach(s.v or (get() and 1 or 0), get() and 1 or 0, 14)
+            RBox(512, 0, 0, w, h, Color(255, 255, 255, 30))
+            RBox(512, 0, 0, w, h, AC(255 * s.v))
+            local d = h - S(10)
+            RBox(512, S(5) + (w - d - S(10)) * s.v, S(5), d, d, Color(255, 255, 255))
+        end
+        sw.DoClick = function()
+            set(not get())
+            SaveCfg()
+        end
+    end
+
+    local function SliderRow(label, get, set, mn, mx, fmt, rel)
+        local row = NewRow(96)
+        local sl = vgui.Create("DPanel", row)
+        sl:SetCursor("hand")
+        row.PerformLayout = function(s, w, h)
+            sl:SetPos(S(30), S(56))
+            sl:SetSize(w - S(60), S(26))
+        end
+        row.Draw = function(s, w, h)
+            draw.SimpleText(label, "E_item", S(30), S(30), Color(255, 255, 255), 0, 1)
+            draw.SimpleText(fmt(get()), "E_item", w - S(30), S(30), AC(255), 2, 1)
+        end
+        sl.Think = function(s)
+            if not s.drag then return end
+            local lx = s:ScreenToLocal(gui.MouseX(), 0)
+            local f = math.Clamp(lx / math.max(1, s:GetWide()), 0, 1)
+            set(mn + (mx - mn) * f)
+        end
+        sl.OnMousePressed = function(s, k)
+            if k ~= MOUSE_LEFT then return end
+            s.drag = true
+            s:MouseCapture(true)
+        end
+        sl.OnMouseReleased = function(s, k)
+            if not s.drag then return end
+            s.drag = false
+            s:MouseCapture(false)
+            SaveCfg()
+            if rel then rel() end
+        end
+        sl.Paint = function(s, w, h)
+            s.hv = Approach(s.hv or 0, (s:IsHovered() or s.drag) and 1 or 0, 14)
+            local f = math.Clamp((get() - mn) / (mx - mn), 0, 1)
+            RBox(512, 0, h / 2 - S(4), w, S(8), Color(255, 255, 255, 30))
+            RBox(512, 0, h / 2 - S(4), math.max(S(8), w * f), S(8), AC(255))
+            local d = S(22) + S(4) * s.hv
+            local kx = math.Clamp(w * f, d / 2, w - d / 2)
+            RBox(512, kx - d / 2, h / 2 - d / 2, d, d, Color(255, 255, 255))
+        end
+    end
+
+    local function SwatchRow(label, presets, get, set)
+        local row = NewRow(124)
+        row.sb = {}
+        row.PerformLayout = function(s, w, h)
+            for i, b in ipairs(s.sb) do
+                b:SetPos(S(30) + (i - 1) * S(62), S(56))
+                b:SetSize(S(54), S(54))
+            end
+        end
+        row.Draw = function(s, w, h)
+            draw.SimpleText(label, "E_item", S(30), S(30), Color(255, 255, 255), 0, 1)
+        end
+        for i, p in ipairs(presets) do
+            local b = vgui.Create("DButton", row)
+            b:SetText("")
+            b.Paint = function(s, w, h)
+                s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+                local c = get()
+                local sel = c[1] == p[1] and c[2] == p[2] and c[3] == p[3]
+                local d = S(40) + S(6) * s.hv
+                if sel then
+                    RBox(512, (w - S(52)) / 2, (h - S(52)) / 2, S(52), S(52), Color(255, 255, 255, 230))
+                    RBox(512, (w - S(46)) / 2, (h - S(46)) / 2, S(46), S(46), Color(20, 20, 20))
+                end
+                if p[1] + p[2] + p[3] < 60 and not sel then
+                    RBox(512, (w - d) / 2 - S(1), (h - d) / 2 - S(1), d + S(2), d + S(2), Color(255, 255, 255, 40))
+                end
+                RBox(512, (w - d) / 2, (h - d) / 2, d, d, Color(p[1], p[2], p[3]))
+            end
+            b.DoClick = function()
+                set(p)
+                SaveCfg()
+            end
+            row.sb[i] = b
+        end
+    end
+
+    local function CompSliders(prefix, key, mx)
+        local names = {"красный", "зелёный", "синий"}
+        for c = 1, 3 do
+            SliderRow(prefix .. ": " .. names[c], function() return Cfg[key][c] end, function(v) Cfg[key][c] = math.Round(v) end, 0, mx, FInt)
+        end
+    end
+
+    local CustPages = {
+        {name = "ЦВЕТА", build = function()
+            SwatchRow("Акцентный цвет", AccPresets, function() return Cfg.accent end, function(p) Cfg.accent = {p[1], p[2], p[3]} end)
+            CompSliders("Акцент", "accent", 255)
+            SwatchRow("Цвет фона меню", BgPresets, function() return Cfg.bg end, function(p) Cfg.bg = {p[1], p[2], p[3]} end)
+            CompSliders("Фон", "bg", 80)
+        end},
+        {name = "ФОН", build = function()
+            SliderRow("Прозрачность фона меню", function() return Cfg.bgAlpha end, function(v) Cfg.bgAlpha = math.Round(v) end, 0, 255, FPct)
+            ToggleRow("Размытие экрана", function() return Cfg.blur end, function(v) Cfg.blur = v end)
+            SliderRow("Прозрачность карточек", function() return Cfg.cardAlpha end, function(v) Cfg.cardAlpha = math.Round(v) end, 0, 255, FPct)
+            ToggleRow("Градиентное свечение", function() return Cfg.glow end, function(v) Cfg.glow = v end)
+            SliderRow("Яркость свечения", function() return Cfg.glowPower end, function(v) Cfg.glowPower = v end, 0.2, 5.0, FX)
+        end},
+        {name = "ВИД", build = function()
+            SliderRow("Скругление углов", function() return Cfg.radius end, function(v) Cfg.radius = math.Round(v) end, 0, 30, FPx)
+            SliderRow("Размер меню", function() return Cfg.scale end, function(v) Cfg.scale = v end, 0.7, 1, FScale, function() timer.Simple(0, Rebuild) end)
+        end}
+    }
+
+    BuildCust = function(i)
+        custScroll:GetCanvas():Clear()
+        custScroll.target = 0
+        custScroll:GetVBar():SetScroll(0)
+        rowN = 0
+        custBase = SysTime()
+        local pg = CustPages[i]
+        if pg then pg.build() end
+    end
+
+    SideList(custPnl, CustPages, function() return activeCfg end, function(i)
+        activeCfg = i
+        BuildCust(i)
+    end, function() return custAnim end)
+
+    for i = 1, #NavList do
+        local nb = vgui.Create("DButton", pnl)
+        nb:SetText("")
+        nb.hv = 0
+        nb.Paint = function(s)
+            s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+        end
+        nb.DoClick = function() SetTab(i) end
+        navBtns[i] = nb
+    end
+    LayoutNav()
+
+    local cls = vgui.Create("DButton", pnl)
+    cls:SetText("")
+    cls:SetSize(S(46), S(46))
+    cls:SetPos(X(1800), Y(72))
+    cls.Paint = function(s, w, h)
+        s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+        draw.SimpleText("✕", "E_close", w / 2, h / 2, Color(255, 255, 255, 170 + 85 * s.hv), 1, 1)
+    end
+    cls.DoClick = function() CloseMenu() end
+
+    local don = vgui.Create("DButton", pnl)
+    don:SetText("")
+    don:SetSize(S(170), S(60))
+    don:SetPos(X(1618), Y(65))
+    don.DoClick = function()
+        if DonateCmd ~= "" then
+            LocalPlayer():ConCommand("say " .. DonateCmd)
+        end
+    end
+    don.Paint = function(s, w, h)
+        s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+        s.pr = Approach(s.pr or 0, s:IsDown() and 1 or 0, 22)
+        DisableClipping(true)
+        RBox(R(), 0, 0, w, h, AC(255, s.hv))
+        draw.SimpleText("ДОНАТ", "E_donate", S(24), h / 2, OnAC(), 0, 1)
+        local bob = math.sin(CurTime() * 4) * S(2)
+        local bw, bh = S(64), S(34)
+        RBox(R(), w - bw + S(6), -S(20) + bob, bw, bh, Color(255, 45, 61))
+        draw.SimpleText("X2", "E_badge", w - bw / 2 + S(6), -S(20) + bh / 2 + bob, Color(255, 255, 255), 1, 1)
+        DisableClipping(false)
+    end
+
+    if tab == 2 then
+        FillShop()
+    elseif tab == 3 then
+        BuildCust(activeCfg)
+        custBase = base
+        for _, ch in ipairs(custScroll:GetCanvas():GetChildren()) do
+            if ch.born then ch.born = base end
+        end
+    end
+
+    pnl.Think = function(s)
+        local dt = FrameTime()
+        if s.closing then
+            s.t = math.max(0, s.t - dt / 0.3)
+        else
+            s.t = math.min(1, s.t + dt / 0.5)
+        end
+        s.e = Ease(s.t)
+        s:SetAlpha(255 * math.min(1, s.e * 1.4))
+
+        tabF = Approach(tabF, tab, 9)
+        if math.abs(tabF - tab) < 0.002 then tabF = tab end
+        local w1, w2, w3 = W(1), W(2), W(3)
+
+        jobPnl:SetAlpha(255 * w1)
+        jobPnl:SetVisible(w1 > 0.02)
+        shopPnl:SetAlpha(255 * w2)
+        shopPnl:SetVisible(w2 > 0.02)
+        custPnl:SetAlpha(255 * w3)
+        custPnl:SetVisible(w3 > 0.02)
+
+        local ma = Ease((SysTime() - mdlAnim) / 0.6)
+        mdl:SetAlpha(255 * ma * s.e * w1)
+        mdl:SetPos(X(610), Y(160) + S(30) * (1 - ma) + S(20) * (1 - s.e))
+
+        if s.closing and s.t <= 0 then
+            s:Remove()
+        end
+    end
+end
+
+local function ToggleMenu()
+    if CurTime() < lastToggle then return end
+    lastToggle = CurTime() + 0.25
+    if IsValid(Pnl) then
+        CloseMenu()
+    else
+        OpenMenu(1, false)
+    end
+end
+
+hook.Add("PlayerBindPress", "ElisiumRP_F4_Bind", function(ply, bind, pressed)
+    if string.find(bind, "gm_showspare2") and pressed then
+        ToggleMenu()
+        return true
+    end
+end)
+
+hook.Add("ShowSpare2", "ElisiumRP_F4_Hook", function()
+    ToggleMenu()
+    return true
+end)
+
+timer.Simple(1, function()
+    if DarkRP and DarkRP.openF4Menu then
+        DarkRP.openF4Menu = function() end
+        hook.Remove("ShowSpare2", "DarkRP_F4Menu")
+    end
+end)
+
+Сделай текст категорий в сером фоне чуть ниже рядом с текстом название работы сделай градиент не на заднем фоне а на переднем а то оно не яркое сделай ему по умолчанию 3.5 яркость сделай прозрачность фона 85 убери полносстью размытие экрана когда открываю меню то модель прозрачная сначала и когда листаю тоже прозрачная исправь сделай категорию снизу первую КОМАНДЫ потом РАБОТЫ опусти текст ELYSIUM RP чуть ниже смотри сделай из materials C:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\materials вот сама картинка back.png смотри там на скриншоте сделай вот это по краям f4 переворачивать без реверсы ну типо напиши цельный код без коментариев

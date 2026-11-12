@@ -1,7 +1,7 @@
 if SERVER then return end
 
 local glowMat = Material("particle/Particle_Glow_04_Additive")
-local blurMat = Material("pp/blurscreen")
+local backMat = Material("back.png", "nocull smooth")
 local Pnl
 local OpenMenu
 local activeJob = 1
@@ -10,10 +10,12 @@ local activeCat = 1
 local activeCfg = 1
 local lastToggle = 0
 local NameSizes = {84, 72, 62, 54, 46, 40, 34}
-local NavList = {"РАБОТЫ", "МАГАЗИН", "КАСТОМИЗАЦИЯ"}
+local CatFonts = {"E_cat", "E_cat_sm", "E_cat_xs"}
+local TAB_COMMANDS, TAB_JOBS, TAB_SHOP, TAB_CUSTOM = 1, 2, 3, 4
+local NavList = {"КОМАНДЫ", "РАБОТЫ", "МАГАЗИН", "КАСТОМИЗАЦИЯ"}
 local CfgFile = "elisium_f4_cfg2.json"
 local MenuFont = "Montserrat"
-local Logo1 = "ELISIUM"
+local Logo1 = "ELYSIUM"
 local Logo2 = "RP"
 local DonateCmd = "!donate"
 
@@ -31,8 +33,6 @@ local Defaults = {
     accent = {255, 138, 0},
     bg = {0, 0, 0},
     bgAlpha = 200,
-    dim = 0,
-    blur = true,
     radius = 30,
     cardAlpha = 60,
     glow = true,
@@ -62,6 +62,9 @@ local function LoadCfg()
     end
     Cfg.scale = math.Clamp(Cfg.scale, 0.7, 1)
     Cfg.radius = math.Clamp(Cfg.radius, 0, 30)
+    Cfg.bgAlpha = math.Clamp(Cfg.bgAlpha, 0, 255)
+    Cfg.cardAlpha = math.Clamp(Cfg.cardAlpha, 0, 255)
+    Cfg.glowPower = math.Clamp(Cfg.glowPower, 0.2, 5)
 end
 
 LoadCfg()
@@ -189,6 +192,12 @@ local function MoneyStr(n)
     return DarkRP and DarkRP.formatMoney(n) or ("$" .. n)
 end
 
+local function ChatPrefix()
+    local gm = GAMEMODE or GM
+    local prefix = gm and gm.Config and gm.Config.chatCommandPrefix
+    return isstring(prefix) and prefix or "/"
+end
+
 local function BuildShopData()
     local pl = LocalPlayer()
     local cats = {}
@@ -275,6 +284,56 @@ local function BuildShopData()
     return cats
 end
 
+local function BuildCommandData()
+    local result = {}
+    if not DarkRP then return result end
+
+    local commands = DarkRP.chatCommands
+    if isfunction(DarkRP.getChatCommands) then
+        local ok, data = pcall(DarkRP.getChatCommands)
+        if ok and istable(data) then commands = data end
+    end
+    if not istable(commands) then return result end
+
+    local prefix = ChatPrefix()
+    local pl = LocalPlayer()
+
+    for key, entry in pairs(commands) do
+        if istable(entry) then
+            local name = entry.command or key
+            if isstring(name) and name ~= "" then
+                local description = entry.description
+                if isfunction(DarkRP.getChatCommandDescription) then
+                    local ok, value = pcall(DarkRP.getChatCommandDescription, name)
+                    if ok and isstring(value) then description = value end
+                end
+                if not isstring(description) or description == "" then
+                    description = "Описание отсутствует"
+                end
+                description = description:gsub("%s+", " ")
+                description = string.Trim(description)
+
+                local available = true
+                if isfunction(entry.condition) then
+                    local ok, allowed = pcall(entry.condition, pl)
+                    available = ok and not not allowed
+                end
+
+                result[#result + 1] = {
+                    command = prefix .. name,
+                    description = description,
+                    available = available
+                }
+            end
+        end
+    end
+
+    table.sort(result, function(a, b)
+        return string.lower(a.command) < string.lower(b.command)
+    end)
+    return result
+end
+
 local function CreateFonts()
     local scl = GetScl()
     local function F(id, rs, w)
@@ -286,6 +345,8 @@ local function CreateFonts()
     F("badge", 24, 900)
     F("close", 32, 600)
     F("cat", 24, 700)
+    F("cat_sm", 20, 700)
+    F("cat_xs", 16, 700)
     F("val", 48, 900)
     F("lbl", 22, 600)
     F("eqt", 20, 700)
@@ -316,14 +377,24 @@ local function TakeJob()
     if not IsValid(Pnl) or Pnl.closing then return end
     local j = RPExtraTeams[activeJob]
     if j and j.command then
-        LocalPlayer():ConCommand("say /" .. j.command)
+        local pl = LocalPlayer()
+        local model = istable(j.model) and j.model[activeMdl] or j.model
+        if j.team and isstring(model) and DarkRP and isfunction(DarkRP.setPreferredJobModel) then
+            DarkRP.setPreferredJobModel(j.team, model)
+        end
+        local vote = j.vote
+        if isfunction(j.RequiresVote) then
+            local ok, required = pcall(j.RequiresVote, pl, j.team)
+            vote = vote or (ok and required)
+        end
+        pl:ConCommand("say " .. ChatPrefix() .. (vote and "vote" or "") .. j.command)
     end
     CloseMenu()
 end
 
 local function Rebuild()
     if IsValid(Pnl) and not Pnl.closing then
-        OpenMenu(Pnl.tabNow or 1, true)
+        OpenMenu(Pnl.tabNow or TAB_JOBS, true)
     end
 end
 
@@ -345,8 +416,14 @@ OpenMenu = function(startTab, instant)
     if activeCat > #shopData then activeCat = 1 end
 
     local base = instant and (SysTime() - 10) or SysTime()
-    local tab = startTab or 1
+    local tab = startTab or TAB_JOBS
     local tabF = tab
+    local tabWeights = {}
+    for i = 1, #NavList do
+        tabWeights[i] = i == tab and 1 or 0
+    end
+    local cmdAnim = base
+    local commandCount = 0
     local jobAnim = base + 0.25
     local mdlAnim = base + 0.15
     local shopAnim = base
@@ -356,14 +433,14 @@ OpenMenu = function(startTab, instant)
     local c0 = RPExtraTeams[activeJob].color or Color(47, 107, 255)
     local gc = {r = c0.r, g = c0.g, b = c0.b}
 
-    local FillShop, BuildCust
+    local FillCommands, FillShop, BuildCust
 
     local function JA(d)
         return Ease((SysTime() - jobAnim - d) / 0.5)
     end
 
     local function W(i)
-        return math.Clamp(1 - math.abs(tabF - i), 0, 1)
+        return tabWeights[i] or 0
     end
 
     local function GetEq(j, idx)
@@ -404,11 +481,17 @@ OpenMenu = function(startTab, instant)
         sp.Think = function(s)
             local bar = s:GetVBar()
             local cur = bar:GetScroll()
+            if bar.Dragging or math.abs(cur - (s.lastScroll or 0)) > 0.5 then
+                s.target = cur
+            end
+            local mx = math.max(0, s:GetCanvas():GetTall() - s:GetTall())
+            s.target = math.Clamp(s.target, 0, mx)
             if math.abs(cur - s.target) > 0.5 then
                 bar:SetScroll(Lerp(math.min(1, FrameTime() * 12), cur, s.target))
             elseif cur ~= s.target then
                 bar:SetScroll(s.target)
             end
+            s.lastScroll = bar:GetScroll()
         end
     end
 
@@ -424,16 +507,31 @@ OpenMenu = function(startTab, instant)
     pnl.closing = false
     pnl.tabNow = tab
 
+    local cmdPnl = vgui.Create("DPanel", pnl)
+    cmdPnl:SetSize(ScrW(), ScrH())
+    cmdPnl:SetPos(0, 0)
+    cmdPnl:SetAlpha(tab == TAB_COMMANDS and 255 or 0)
+    cmdPnl:SetVisible(tab == TAB_COMMANDS)
+    cmdPnl.Paint = function()
+        local a = EA(SysTime() - cmdAnim, 0.45)
+        draw.SimpleText("ЧАТ-КОМАНДЫ", "E_cat", X(100), Y(183), Color(255, 255, 255, 255 * a), 0, 1)
+        if commandCount == 0 then
+            draw.SimpleText("Команды не найдены", "E_empty", X(960), Y(540), Color(255, 255, 255, 140 * a), 1, 1)
+        end
+    end
+
     local jobPnl = vgui.Create("DPanel", pnl)
     jobPnl:SetSize(ScrW(), ScrH())
     jobPnl:SetPos(0, 0)
+    jobPnl:SetAlpha(tab == TAB_JOBS and 255 or 0)
+    jobPnl:SetVisible(tab == TAB_JOBS)
     jobPnl.Paint = function() end
 
     local shopPnl = vgui.Create("DPanel", pnl)
     shopPnl:SetSize(ScrW(), ScrH())
     shopPnl:SetPos(0, 0)
-    shopPnl:SetAlpha(0)
-    shopPnl:SetVisible(false)
+    shopPnl:SetAlpha(tab == TAB_SHOP and 255 or 0)
+    shopPnl:SetVisible(tab == TAB_SHOP)
     shopPnl.Paint = function(s, w, h)
         local a = EA(SysTime() - shopAnim - 0.3, 0.5)
         local rxp = X(1590)
@@ -447,8 +545,8 @@ OpenMenu = function(startTab, instant)
     local custPnl = vgui.Create("DPanel", pnl)
     custPnl:SetSize(ScrW(), ScrH())
     custPnl:SetPos(0, 0)
-    custPnl:SetAlpha(0)
-    custPnl:SetVisible(false)
+    custPnl:SetAlpha(tab == TAB_CUSTOM and 255 or 0)
+    custPnl:SetVisible(tab == TAB_CUSTOM)
     custPnl.Paint = function() end
 
     local navX, navW, navBtns = {}, {}, {}
@@ -476,13 +574,16 @@ OpenMenu = function(startTab, instant)
         if tab == i or pnl.closing then return end
         tab = i
         pnl.tabNow = i
-        if i == 1 then
+        if i == TAB_COMMANDS then
+            cmdAnim = SysTime()
+            FillCommands()
+        elseif i == TAB_JOBS then
             jobAnim = SysTime()
             mdlAnim = SysTime()
-        elseif i == 2 then
+        elseif i == TAB_SHOP then
             shopAnim = SysTime()
             FillShop()
-        elseif i == 3 then
+        elseif i == TAB_CUSTOM then
             custAnim = SysTime()
             BuildCust(activeCfg)
         end
@@ -490,7 +591,7 @@ OpenMenu = function(startTab, instant)
 
     pnl.OnKeyCodePressed = function(s, k)
         if k == KEY_ENTER then
-            if tab == 1 then TakeJob() end
+            if tab == TAB_JOBS then TakeJob() end
         elseif k == KEY_F4 then
             if CurTime() < lastToggle then return end
             lastToggle = CurTime() + 0.25
@@ -504,19 +605,6 @@ OpenMenu = function(startTab, instant)
         local bx = w / 2 - bw / 2
         local by = (h / 2 + (1 - s.e) * S(26)) - bh / 2
 
-        if Cfg.blur then
-            render.SetScissorRect(bx, by, bx + bw, by + bh, true)
-            surface.SetDrawColor(255, 255, 255, 255)
-            surface.SetMaterial(blurMat)
-            for i = 1, 3 do
-                blurMat:SetFloat("$blur", i * 2 * s.e)
-                blurMat:Recompute()
-                render.UpdateScreenEffectTexture()
-                surface.DrawTexturedRect(0, 0, w, h)
-            end
-            render.SetScissorRect(0, 0, 0, 0, false)
-        end
-
         local e = s.e
         local m = Matrix()
         m:Translate(Vector(w / 2, h / 2 + (1 - e) * S(26), 0))
@@ -524,26 +612,44 @@ OpenMenu = function(startTab, instant)
         m:Translate(Vector(-w / 2, -h / 2, 0))
         cam.PushModelMatrix(m)
 
-        local w1 = W(1)
+        local w1 = W(TAB_JOBS)
         
+        RBox(R(), X(44), Y(44), S(1832), S(992), BGC(Cfg.bgAlpha))
+        RBox(R(), X(50), Y(50), S(1820), S(980), BGC(Cfg.bgAlpha))
+
+        if not backMat:IsError() then
+            local iw, ih = backMat:Width(), backMat:Height()
+            if iw > 0 and ih > 0 then
+                local fit = math.min(S(440) / iw, S(310) / ih)
+                local edgeW, edgeH = iw * fit, ih * fit
+                local left, right = X(44), X(1876) - edgeW
+                local top, bottom = Y(44), Y(1036) - edgeH
+                surface.SetMaterial(backMat)
+                surface.SetDrawColor(255, 255, 255, 255)
+                surface.DrawTexturedRectUV(left, top, edgeW, edgeH, 0, 0, 1, 1)
+                surface.DrawTexturedRectUV(right, top, edgeW, edgeH, 1, 0, 0, 1)
+                surface.DrawTexturedRectUV(left, bottom, edgeW, edgeH, 0, 1, 1, 0)
+                surface.DrawTexturedRectUV(right, bottom, edgeW, edgeH, 1, 1, 0, 0)
+            end
+        end
+
         if Cfg.glow and w1 > 0.01 then
             local br = math.sin(CurTime() * 1.6) * 0.5 + 0.5
             local gw = S(1400)
+            render.SetScissorRect(bx, by, bx + bw, by + bh, true)
             surface.SetMaterial(glowMat)
-            surface.SetDrawColor(gc.r, gc.g, gc.b, math.min(255, (100 + 50 * br) * Cfg.glowPower * w1))
+            surface.SetDrawColor(gc.r, gc.g, gc.b, math.min(255, (35 + 16 * br) * Cfg.glowPower * w1))
             surface.DrawTexturedRect(X(960) - gw / 2, Y(540) - gw / 2, gw, gw)
+            render.SetScissorRect(0, 0, 0, 0, false)
         end
-
-        RBox(R(), X(44), Y(44), S(1832), S(992), BGC(Cfg.bgAlpha))
-        RBox(R(), X(50), Y(50), S(1820), S(980), BGC(Cfg.bgAlpha))
 
         local t = SysTime() - s.t0
         local la = EA(t - 0.05, 0.5)
         local lx = X(96) - (1 - la) * S(40)
         surface.SetFont("E_logo")
         local lw = surface.GetTextSize(Logo1 .. " ")
-        draw.SimpleText(Logo1 .. " ", "E_logo", lx, Y(95), Color(255, 255, 255, 255 * la), 0, 1)
-        draw.SimpleText(Logo2, "E_logo", lx + lw, Y(95), AC(255 * la), 0, 1)
+        draw.SimpleText(Logo1 .. " ", "E_logo", lx, Y(108), Color(255, 255, 255, 255 * la), 0, 1)
+        draw.SimpleText(Logo2, "E_logo", lx + lw, Y(108), AC(255 * la), 0, 1)
 
         for i, nv in ipairs(NavList) do
             local nw = navW[i]
@@ -551,8 +657,7 @@ OpenMenu = function(startTab, instant)
             local na = EA(t - 0.12 - i * 0.06, 0.5)
             local ny = Y(95) - (1 - na) * S(14)
             local hv = navBtns[i] and navBtns[i].hv or 0
-            local base255 = 165
-            if i <= 3 then base255 = 165 + 90 * W(i) end
+            local base255 = 165 + 90 * W(i)
             local al = base255 + (255 - base255) * hv
             draw.SimpleText(nv, "E_nav", nxp, ny, Color(255, 255, 255, al * na), 0, 1)
         end
@@ -580,24 +685,39 @@ OpenMenu = function(startTab, instant)
             local function Ox(a) return (1 - a) * S(40) end
 
             local a1 = JA(0)
+            local nameStr = string.upper(j.name or "")
             local catStr = j.category or "Без категории"
-            surface.SetFont("E_cat")
+            local catFont = CatFonts[#CatFonts]
+            for _, font in ipairs(CatFonts) do
+                surface.SetFont(font)
+                if surface.GetTextSize(catStr) <= S(160) then
+                    catFont = font
+                    break
+                end
+            end
+            catStr = Fit(catStr, catFont, S(160))
+            surface.SetFont(catFont)
             local cw = surface.GetTextSize(catStr)
             local bh = S(48)
-            RBox(R(), rx + Ox(a1), ry, cw + S(40), bh, Color(255, 255, 255, 25 * a1))
-            draw.SimpleText(catStr, "E_cat", rx + S(20) + Ox(a1), ry + bh / 2, Color(255, 255, 255, 255 * a1), 0, 1)
-
-            local a2 = JA(0.06)
-            local nameStr = string.upper(j.name)
+            local badgeW = cw + S(30)
+            local maxNameW = math.max(S(80), S(440) - badgeW - S(14))
             local nf = "E_nm" .. #NameSizes
             for i = 1, #NameSizes do
                 surface.SetFont("E_nm" .. i)
-                if surface.GetTextSize(nameStr) <= S(470) then
+                if surface.GetTextSize(nameStr) <= maxNameW then
                     nf = "E_nm" .. i
                     break
                 end
             end
-            draw.SimpleText(nameStr, nf, rx + Ox(a2), ry + S(118), Color(255, 255, 255, 255 * a2), 0, 1)
+            nameStr = Fit(nameStr, nf, maxNameW)
+            surface.SetFont(nf)
+            local nameW = surface.GetTextSize(nameStr)
+            local nameY = ry + S(118)
+            local nameX = rx + Ox(a1)
+            local badgeX = nameX + nameW + S(14)
+            draw.SimpleText(nameStr, nf, nameX, nameY, Color(255, 255, 255, 255 * a1), 0, 1)
+            RBox(R(), badgeX, nameY - bh / 2, badgeW, bh, Color(255, 255, 255, 25 * a1))
+            draw.SimpleText(catStr, catFont, badgeX + S(15), nameY, Color(255, 255, 255, 255 * a1), 0, 1)
 
             local salary = j.salary or 0
             dispSal = Approach(dispSal, salary, 8)
@@ -671,6 +791,7 @@ OpenMenu = function(startTab, instant)
     local mdl = vgui.Create("DModelPanel", jobPnl)
     mdl:SetSize(S(700), S(750))
     mdl:SetPos(X(610), Y(160))
+    mdl:SetVisible(tab == TAB_JOBS)
     mdl.LayoutEntity = function(s, ent)
         ent:SetAngles(Angle(0, 0, 0))
     end
@@ -860,6 +981,95 @@ OpenMenu = function(startTab, instant)
                 end
             end
         end
+    end
+
+    local searchBg = vgui.Create("DPanel", cmdPnl)
+    searchBg:SetPos(X(1210), Y(158))
+    searchBg:SetSize(S(620), S(54))
+    searchBg.Paint = function(s, w, h)
+        RBox(R(), 0, 0, w, h, Color(0, 0, 0, math.min(255, Cfg.cardAlpha + 40)))
+    end
+
+    local search = vgui.Create("DTextEntry", searchBg)
+    search:SetPos(S(18), S(4))
+    search:SetSize(S(584), S(46))
+    search:SetFont("E_info")
+    search.Paint = function(s, w, h)
+        if s:GetText() == "" and not s:HasFocus() then
+            draw.SimpleText("Поиск команд и описаний", "E_info", 0, h / 2, Color(255, 255, 255, 110), 0, 1)
+        else
+            s:DrawTextEntryText(Color(255, 255, 255), AC(120), Color(255, 255, 255))
+        end
+    end
+
+    local cmdScroll = vgui.Create("DScrollPanel", cmdPnl)
+    cmdScroll:SetSize(S(1730), S(710))
+    cmdScroll:SetPos(X(100), Y(230))
+    StyleScroll(cmdScroll)
+    SmoothScroll(cmdScroll)
+
+    local cmdLayout = vgui.Create("DIconLayout", cmdScroll)
+    cmdLayout:Dock(TOP)
+    cmdLayout:DockMargin(0, 0, S(10), S(10))
+    cmdLayout:SetSpaceX(S(20))
+    cmdLayout:SetSpaceY(S(16))
+
+    local commandData = {}
+    local function FilterCommands()
+        cmdLayout:Clear()
+        cmdScroll.target = 0
+        cmdScroll:GetVBar():SetScroll(0)
+        commandCount = 0
+        local query = string.Trim(string.lower(search:GetText() or ""))
+
+        for _, item in ipairs(commandData) do
+            local haystack = string.lower(item.command .. " " .. item.description)
+            if query == "" or string.find(haystack, query, 1, true) then
+                commandCount = commandCount + 1
+                local cw, ch = S(830), S(112)
+                local bw, bh = S(210), S(50)
+                local card = cmdLayout:Add("DPanel")
+                card:SetSize(cw, ch)
+                card:SetTooltip(item.description)
+                card.born = cmdAnim + math.min(commandCount, 8) * 0.035
+                card.Think = function(s)
+                    s:SetAlpha(255 * EA(SysTime() - s.born, 0.4))
+                end
+
+                local maxText = cw - bw - S(80)
+                local name = Fit(item.command, "E_item", maxText)
+                local description = Fit(item.description, "E_info", maxText)
+                card.Paint = function(s, w, h)
+                    s.hv = Approach(s.hv or 0, (s:IsHovered() or s:IsChildHovered()) and 1 or 0, 14)
+                    RBox(R(), 0, 0, w, h, Color(0, 0, 0, math.min(255, Cfg.cardAlpha + 40 * s.hv)))
+                    local c = item.available and Color(255, 255, 255) or Color(255, 135, 135)
+                    draw.SimpleText(name, "E_item", S(26), S(34), c, 0, 1)
+                    draw.SimpleText(description, "E_info", S(26), S(75), Color(255, 255, 255, 150), 0, 1)
+                end
+
+                local copy = vgui.Create("DButton", card)
+                copy:SetText("")
+                copy:SetSize(bw, bh)
+                copy:SetPos(cw - bw - S(20), (ch - bh) / 2)
+                copy:SetTooltip(item.available and "Скопировать команду" or "Команда сейчас недоступна")
+                copy.Paint = function(s, w, h)
+                    s.hv = Approach(s.hv or 0, s:IsHovered() and 1 or 0, 14)
+                    RBox(R(), 0, 0, w, h, AC(255, s.hv))
+                    local copied = s.copiedUntil and CurTime() < s.copiedUntil
+                    draw.SimpleText(copied and "СКОПИРОВАНО" or "КОПИРОВАТЬ", "E_buy", w / 2, h / 2, OnAC(), 1, 1)
+                end
+                copy.DoClick = function(s)
+                    SetClipboardText(item.command)
+                    s.copiedUntil = CurTime() + 1.5
+                end
+            end
+        end
+    end
+
+    search.OnChange = function() FilterCommands() end
+    FillCommands = function()
+        commandData = BuildCommandData()
+        FilterCommands()
     end
 
     local shopScroll = vgui.Create("DScrollPanel", shopPnl)
@@ -1113,7 +1323,6 @@ OpenMenu = function(startTab, instant)
         end},
         {name = "ФОН", build = function()
             SliderRow("Прозрачность фона меню", function() return Cfg.bgAlpha end, function(v) Cfg.bgAlpha = math.Round(v) end, 0, 255, FPct)
-            ToggleRow("Размытие экрана", function() return Cfg.blur end, function(v) Cfg.blur = v end)
             SliderRow("Прозрачность карточек", function() return Cfg.cardAlpha end, function(v) Cfg.cardAlpha = math.Round(v) end, 0, 255, FPct)
             ToggleRow("Градиентное свечение", function() return Cfg.glow end, function(v) Cfg.glow = v end)
             SliderRow("Яркость свечения", function() return Cfg.glowPower end, function(v) Cfg.glowPower = v end, 0.2, 5.0, FX)
@@ -1183,9 +1392,11 @@ OpenMenu = function(startTab, instant)
         DisableClipping(false)
     end
 
-    if tab == 2 then
+    if tab == TAB_COMMANDS then
+        FillCommands()
+    elseif tab == TAB_SHOP then
         FillShop()
-    elseif tab == 3 then
+    elseif tab == TAB_CUSTOM then
         BuildCust(activeCfg)
         custBase = base
         for _, ch in ipairs(custScroll:GetCanvas():GetChildren()) do
@@ -1205,17 +1416,29 @@ OpenMenu = function(startTab, instant)
 
         tabF = Approach(tabF, tab, 9)
         if math.abs(tabF - tab) < 0.002 then tabF = tab end
-        local w1, w2, w3 = W(1), W(2), W(3)
+        for i = 1, #NavList do
+            local target = i == tab and 1 or 0
+            tabWeights[i] = Approach(tabWeights[i], target, 9)
+            if math.abs(tabWeights[i] - target) < 0.002 then tabWeights[i] = target end
+        end
+        local wc, wj, ws, wu = W(TAB_COMMANDS), W(TAB_JOBS), W(TAB_SHOP), W(TAB_CUSTOM)
 
-        jobPnl:SetAlpha(255 * w1)
-        jobPnl:SetVisible(w1 > 0.02)
-        shopPnl:SetAlpha(255 * w2)
-        shopPnl:SetVisible(w2 > 0.02)
-        custPnl:SetAlpha(255 * w3)
-        custPnl:SetVisible(w3 > 0.02)
+        cmdPnl:SetAlpha(255 * wc)
+        cmdPnl:SetVisible(wc > 0.02)
+        cmdPnl:SetMouseInputEnabled(tab == TAB_COMMANDS)
+        jobPnl:SetAlpha(255 * wj)
+        jobPnl:SetVisible(wj > 0.02)
+        jobPnl:SetMouseInputEnabled(tab == TAB_JOBS)
+        shopPnl:SetAlpha(255 * ws)
+        shopPnl:SetVisible(ws > 0.02)
+        shopPnl:SetMouseInputEnabled(tab == TAB_SHOP)
+        custPnl:SetAlpha(255 * wu)
+        custPnl:SetVisible(wu > 0.02)
+        custPnl:SetMouseInputEnabled(tab == TAB_CUSTOM)
 
         local ma = Ease((SysTime() - mdlAnim) / 0.6)
-        mdl:SetAlpha(255 * ma * s.e * w1)
+        mdl:SetVisible(tab == TAB_JOBS)
+        mdl:SetAlpha(255)
         mdl:SetPos(X(610), Y(160) + S(30) * (1 - ma) + S(20) * (1 - s.e))
 
         if s.closing and s.t <= 0 then
@@ -1230,7 +1453,7 @@ local function ToggleMenu()
     if IsValid(Pnl) then
         CloseMenu()
     else
-        OpenMenu(1, false)
+        OpenMenu(TAB_JOBS, false)
     end
 end
 
@@ -1252,5 +1475,3 @@ timer.Simple(1, function()
         hook.Remove("ShowSpare2", "DarkRP_F4Menu")
     end
 end)
-
-Сделай текст категорий в сером фоне чуть ниже рядом с текстом название работы сделай градиент не на заднем фоне а на переднем а то оно не яркое сделай ему по умолчанию 3.5 яркость сделай прозрачность фона 85 убери полносстью размытие экрана когда открываю меню то модель прозрачная сначала и когда листаю тоже прозрачная исправь сделай категорию снизу первую КОМАНДЫ потом РАБОТЫ опусти текст ELYSIUM RP чуть ниже смотри сделай из materials C:\SteamLibrary\steamapps\common\GarrysMod\garrysmod\materials вот сама картинка back.png смотри там на скриншоте сделай вот это по краям f4 переворачивать без реверсы ну типо напиши цельный код без коментариев

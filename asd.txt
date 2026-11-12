@@ -36,11 +36,14 @@ local Defaults = {
     radius = 30,
     cardAlpha = 60,
     glow = true,
-    glowPower = 3.5,
+    glowPower = 1.0,
     scale = 1
 }
 
+local GlowCfgRevision = 1
 local Cfg = table.Copy(Defaults)
+Cfg.glowSettingRevision = GlowCfgRevision
+local migratedGlow = false
 
 local function LoadCfg()
     if not file.Exists(CfgFile, "DATA") then return end
@@ -60,6 +63,10 @@ local function LoadCfg()
             Cfg[k] = n
         end
     end
+    if t.glowSettingRevision ~= GlowCfgRevision then
+        Cfg.glowPower = Defaults.glowPower
+        migratedGlow = true
+    end
     Cfg.scale = math.Clamp(Cfg.scale, 0.7, 1)
     Cfg.radius = math.Clamp(Cfg.radius, 0, 30)
     Cfg.bgAlpha = math.Clamp(Cfg.bgAlpha, 0, 255)
@@ -74,6 +81,8 @@ local function SaveCfg()
         file.Write(CfgFile, util.TableToJSON(Cfg))
     end)
 end
+
+if migratedGlow then SaveCfg() end
 
 local PolyCache = {}
 local PolyCount = 0
@@ -284,6 +293,124 @@ local function BuildShopData()
     return cats
 end
 
+local CommandRu = {
+    ["pm"] = {"Личное сообщение", "Отправить сообщение выбранному игроку."},
+    ["w"] = {"Шёпот", "Отправить сообщение игрокам поблизости."},
+    ["y"] = {"Крик", "Отправить сообщение на большем расстоянии."},
+    ["me"] = {"Ролевое действие", "Описать действие своего персонажа."},
+    ["ooc"] = {"Общий чат", "Отправить сообщение всем игрокам вне роли."},
+    ["g"] = {"Групповой чат", "Отправить сообщение своей группе."},
+    ["broadcast"] = {"Объявление", "Сделать объявление от имени мэра."},
+    ["channel"] = {"Радиоканал", "Переключить радиоканал."},
+    ["radio"] = {"Сообщение по рации", "Отправить сообщение по радиосвязи."},
+    ["credits"] = {"Авторы DarkRP", "Показать информацию об авторах режима."},
+    ["advert"] = {"Объявление", "Отправить рекламное объявление игрокам."},
+    ["help"] = {"Помощь", "Открыть справку по серверу."},
+    ["rules"] = {"Правила", "Открыть правила сервера."},
+    ["donate"] = {"Донат", "Открыть раздел пожертвований сервера."},
+    ["afk"] = {"Режим отсутствия", "Включить или выключить режим отсутствия."},
+    ["sleep"] = {"Сон", "Уложить персонажа спать или разбудить его."},
+    ["rpname"] = {"Ролевое имя", "Изменить имя своего персонажа."},
+    ["forcerpname"] = {"Изменить имя игрока", "Принудительно изменить ролевое имя игрока."},
+    ["freerpname"] = {"Освободить имя", "Освободить ролевое имя для повторного использования."},
+    ["give"] = {"Передать деньги", "Передать указанную сумму игроку перед вами."},
+    ["dropmoney"] = {"Выбросить деньги", "Положить указанную сумму на землю."},
+    ["cheque"] = {"Выписать чек", "Создать денежный чек для выбранного игрока."},
+    ["setmoney"] = {"Установить деньги", "Изменить сумму в кошельке игрока."},
+    ["addmoney"] = {"Добавить деньги", "Добавить указанную сумму игроку."},
+    ["job"] = {"Название работы", "Изменить отображаемое название своей работы."},
+    ["demote"] = {"Увольнение", "Начать голосование за увольнение игрока."},
+    ["switchjob"] = {"Обмен профессиями", "Предложить обмен работами игроку перед вами."},
+    ["teamban"] = {"Запретить профессию", "Запретить игроку выбирать указанную профессию."},
+    ["teamunban"] = {"Разрешить профессию", "Снять запрет на выбор профессии игроком."},
+    ["buy"] = {"Купить оружие", "Купить доступное оружие."},
+    ["buyshipment"] = {"Купить ящик", "Купить ящик с поставкой."},
+    ["buyvehicle"] = {"Купить транспорт", "Купить доступный транспорт."},
+    ["buyammo"] = {"Купить патроны", "Купить указанные боеприпасы."},
+    ["buyfood"] = {"Купить еду", "Купить доступную еду."},
+    ["price"] = {"Установить цену", "Изменить цену товара в указанном устройстве."},
+    ["cr"] = {"Вызвать полицию", "Отправить полиции запрос о помощи."},
+    ["warrant"] = {"Ордер на обыск", "Запросить ордер на обыск игрока."},
+    ["unwarrant"] = {"Отозвать ордер", "Отменить ордер на обыск игрока."},
+    ["wanted"] = {"Объявить в розыск", "Объявить указанного игрока в розыск."},
+    ["unwanted"] = {"Снять розыск", "Отменить розыск указанного игрока."},
+    ["arrest"] = {"Арестовать игрока", "Принудительно отправить игрока в тюрьму."},
+    ["unarrest"] = {"Освободить игрока", "Принудительно освободить игрока из тюрьмы."},
+    ["agenda"] = {"Изменить повестку", "Установить текст повестки своей организации."},
+    ["addagenda"] = {"Дополнить повестку", "Добавить строку в повестку организации."},
+    ["lottery"] = {"Начать лотерею", "Организовать лотерею для игроков."},
+    ["lockdown"] = {"Комендантский час", "Объявить комендантский час."},
+    ["unlockdown"] = {"Отменить комендантский час", "Завершить комендантский час."},
+    ["requestlicense"] = {"Запросить лицензию", "Запросить разрешение на оружие."},
+    ["givelicense"] = {"Выдать лицензию", "Выдать игроку разрешение на оружие."},
+    ["demotelicense"] = {"Отозвать лицензию", "Начать голосование об отзыве лицензии."},
+    ["setlicense"] = {"Установить лицензию", "Принудительно выдать игроку лицензию."},
+    ["unsetlicense"] = {"Забрать лицензию", "Принудительно отозвать лицензию игрока."},
+    ["toggleownable"] = {"Настроить продажу двери", "Разрешить или запретить покупку двери."},
+    ["togglegroupownable"] = {"Доступ группы к двери", "Настроить доступ группы к двери."},
+    ["toggleteamownable"] = {"Доступ профессии к двери", "Настроить покупку двери для профессии."},
+    ["toggleown"] = {"Купить или продать дверь", "Изменить владение дверью перед вами."},
+    ["unownalldoors"] = {"Продать все двери", "Отказаться от всех своих дверей."},
+    ["title"] = {"Название двери", "Изменить название двери перед вами."},
+    ["removeowner"] = {"Убрать совладельца", "Удалить совладельца указанной двери."},
+    ["addowner"] = {"Добавить совладельца", "Пригласить игрока в совладельцы двери."},
+    ["forceunlock"] = {"Открыть дверь", "Принудительно разблокировать указанную дверь."},
+    ["forceremoveowner"] = {"Удалить владельца двери", "Принудительно удалить владельца двери."},
+    ["forceunownall"] = {"Изъять все владения", "Принудительно снять владение дверями и транспортом."},
+    ["forcelock"] = {"Закрыть дверь", "Принудительно заблокировать указанную дверь."},
+    ["forceunown"] = {"Изъять дверь", "Принудительно убрать владельцев двери."},
+    ["forceown"] = {"Назначить владельца", "Принудительно назначить владельца двери."},
+    ["setspawn"] = {"Установить место появления", "Заменить точки появления выбранной профессии."},
+    ["addspawn"] = {"Добавить место появления", "Добавить точку появления для профессии."},
+    ["removespawn"] = {"Удалить места появления", "Удалить точки появления выбранной профессии."},
+    ["jailpos"] = {"Установить тюрьму", "Заменить точки появления игроков в тюрьме."},
+    ["addjailpos"] = {"Добавить место в тюрьме", "Добавить точку появления в тюрьме."},
+    ["forcecancelvote"] = {"Отменить голосование", "Принудительно завершить голосование."},
+    ["hitprice"] = {"Цена заказа", "Установить стоимость заказа на убийство."},
+    ["requesthit"] = {"Заказать убийство", "Передать заказ игроку перед вами."},
+    ["cancelhit"] = {"Отменить заказ", "Отменить действующий заказ на убийство."},
+    ["admintell"] = {"Сообщение администратора", "Отправить сообщение выбранному игроку."},
+    ["admintellall"] = {"Общее сообщение администратора", "Отправить сообщение всем игрокам."},
+    ["enablestorm"] = {"Включить метеоритный дождь", "Запустить событие с метеоритами."},
+    ["disablestorm"] = {"Отключить метеоритный дождь", "Остановить событие с метеоритами."},
+}
+
+local CommandAliases = {
+    ["/"] = "ooc",
+    ["a"] = "ooc",
+    ["name"] = "rpname",
+    ["nick"] = "rpname",
+    ["moneydrop"] = "dropmoney",
+    ["check"] = "cheque",
+    ["setprice"] = "price",
+    ["ao"] = "addowner",
+    ["ro"] = "removeowner",
+    ["sellalldoors"] = "unownalldoors",
+    ["setjailpos"] = "jailpos",
+    ["wake"] = "sleep",
+    ["wakeup"] = "sleep",
+    ["switchjobs"] = "switchjob",
+    ["jobswitch"] = "switchjob",
+    ["911"] = "cr",
+    ["999"] = "cr",
+    ["112"] = "cr",
+    ["000"] = "cr",
+}
+
+local function SearchLower(text)
+    local s = string.lower(text or "")
+    s = s:gsub("\208[\144-\175]", function(char)
+        local second = string.byte(char, 2)
+        if second < 160 then return string.char(208, second + 32) end
+        return string.char(209, second - 32)
+    end)
+    return (s:gsub("\208\129", "\209\145"))
+end
+
+local function HasCyrillic(text)
+    return isstring(text) and string.find(text, "[\208\209][\128-\191]") ~= nil
+end
+
 local function BuildCommandData()
     local result = {}
     if not DarkRP then return result end
@@ -297,21 +424,58 @@ local function BuildCommandData()
 
     local prefix = ChatPrefix()
     local pl = LocalPlayer()
+    local generated = {}
+
+    for _, job in ipairs(RPExtraTeams or {}) do
+        if isstring(job.command) and job.command ~= "" then
+            local command = SearchLower(job.command)
+            local name = isstring(job.name) and job.name or "Без названия"
+            generated[command] = {"Выбор профессии", "Выбрать профессию «" .. name .. "»."}
+            generated["vote" .. command] = {"Голосование за профессию", "Начать голосование за «" .. name .. "»."}
+        end
+    end
+    for _, item in ipairs(DarkRPEntities or {}) do
+        if isstring(item.cmd) and item.cmd ~= "" then
+            local command = SearchLower(item.cmd)
+            local name = isstring(item.name) and item.name or "предмет"
+            if not generated[command] then
+                generated[command] = {"Покупка предмета", "Купить «" .. name .. "»."}
+            end
+        end
+    end
 
     for key, entry in pairs(commands) do
         if istable(entry) then
             local name = entry.command or key
             if isstring(name) and name ~= "" then
+                local commandKey = SearchLower(name)
+                local translation = generated[commandKey] or CommandRu[commandKey] or CommandRu[CommandAliases[commandKey] or ""]
                 local description = entry.description
                 if isfunction(DarkRP.getChatCommandDescription) then
                     local ok, value = pcall(DarkRP.getChatCommandDescription, name)
                     if ok and isstring(value) then description = value end
                 end
-                if not isstring(description) or description == "" then
+                if HasCyrillic(entry.descriptionRu) then
+                    description = entry.descriptionRu
+                elseif HasCyrillic(entry.description_ru) then
+                    description = entry.description_ru
+                end
+                local original = isstring(description) and description or ""
+                original = original:gsub("%s+", " ")
+                original = string.Trim(original)
+                local title = entry.titleRu or entry.nameRu or entry.title_ru or entry.name_ru
+                if not HasCyrillic(title) then
+                    title = translation and translation[1] or "Команда сервера"
+                end
+                if HasCyrillic(original) then
+                    description = original
+                elseif translation then
+                    description = translation[2]
+                elseif original ~= "" then
+                    description = "Описание на русском пока не добавлено"
+                else
                     description = "Описание отсутствует"
                 end
-                description = description:gsub("%s+", " ")
-                description = string.Trim(description)
 
                 local available = true
                 if isfunction(entry.condition) then
@@ -319,9 +483,17 @@ local function BuildCommandData()
                     available = ok and not not allowed
                 end
 
+                local command = prefix .. name
+                local tooltip = command .. " — " .. description
+                if not translation and original ~= "" and not HasCyrillic(original) then
+                    tooltip = tooltip .. "\nОписание сервера: " .. original
+                end
                 result[#result + 1] = {
-                    command = prefix .. name,
+                    command = command,
+                    title = title,
                     description = description,
+                    tooltip = tooltip,
+                    search = SearchLower(command .. " " .. title .. " " .. description .. " " .. original),
                     available = available
                 }
             end
@@ -614,16 +786,23 @@ OpenMenu = function(startTab, instant)
 
         local w1 = W(TAB_JOBS)
         
-        RBox(R(), X(44), Y(44), S(1832), S(992), BGC(Cfg.bgAlpha))
+        local bgX, bgY = X(44), Y(44)
+        local bgW, bgH = S(1832), S(992)
+        RBox(R(), bgX, bgY, bgW, bgH, BGC(Cfg.bgAlpha))
         RBox(R(), X(50), Y(50), S(1820), S(980), BGC(Cfg.bgAlpha))
 
         if not backMat:IsError() then
             local iw, ih = backMat:Width(), backMat:Height()
             if iw > 0 and ih > 0 then
-                local fit = math.min(S(440) / iw, S(310) / ih)
+                local fit = math.min(S(620) / iw, S(440) / ih)
                 local edgeW, edgeH = iw * fit, ih * fit
-                local left, right = X(44), X(1876) - edgeW
-                local top, bottom = Y(44), Y(1036) - edgeH
+                local maxX = math.max(0, w - edgeW)
+                local maxY = math.max(0, h - edgeH)
+                local outset = S(36)
+                local left = math.Clamp(bgX - outset, 0, maxX)
+                local right = math.Clamp(bgX + bgW - edgeW + outset, 0, maxX)
+                local top = math.Clamp(bgY - outset, 0, maxY)
+                local bottom = math.Clamp(bgY + bgH - edgeH + outset, 0, maxY)
                 surface.SetMaterial(backMat)
                 surface.SetDrawColor(255, 255, 255, 255)
                 surface.DrawTexturedRectUV(left, top, edgeW, edgeH, 0, 0, 1, 1)
@@ -690,34 +869,31 @@ OpenMenu = function(startTab, instant)
             local catFont = CatFonts[#CatFonts]
             for _, font in ipairs(CatFonts) do
                 surface.SetFont(font)
-                if surface.GetTextSize(catStr) <= S(160) then
+                if surface.GetTextSize(catStr) <= S(400) then
                     catFont = font
                     break
                 end
             end
-            catStr = Fit(catStr, catFont, S(160))
+            catStr = Fit(catStr, catFont, S(400))
             surface.SetFont(catFont)
             local cw = surface.GetTextSize(catStr)
             local bh = S(48)
             local badgeW = cw + S(30)
-            local maxNameW = math.max(S(80), S(440) - badgeW - S(14))
             local nf = "E_nm" .. #NameSizes
             for i = 1, #NameSizes do
                 surface.SetFont("E_nm" .. i)
-                if surface.GetTextSize(nameStr) <= maxNameW then
+                if surface.GetTextSize(nameStr) <= S(440) then
                     nf = "E_nm" .. i
                     break
                 end
             end
-            nameStr = Fit(nameStr, nf, maxNameW)
-            surface.SetFont(nf)
-            local nameW = surface.GetTextSize(nameStr)
+            nameStr = Fit(nameStr, nf, S(440))
             local nameY = ry + S(118)
             local nameX = rx + Ox(a1)
-            local badgeX = nameX + nameW + S(14)
+            local badgeY = ry + S(15)
+            RBox(R(), nameX, badgeY, badgeW, bh, Color(255, 255, 255, 25 * a1))
+            draw.SimpleText(catStr, catFont, nameX + S(15), badgeY + bh / 2, Color(255, 255, 255, 255 * a1), 0, 1)
             draw.SimpleText(nameStr, nf, nameX, nameY, Color(255, 255, 255, 255 * a1), 0, 1)
-            RBox(R(), badgeX, nameY - bh / 2, badgeW, bh, Color(255, 255, 255, 25 * a1))
-            draw.SimpleText(catStr, catFont, badgeX + S(15), nameY, Color(255, 255, 255, 255 * a1), 0, 1)
 
             local salary = j.salary or 0
             dispSal = Approach(dispSal, salary, 8)
@@ -1020,25 +1196,24 @@ OpenMenu = function(startTab, instant)
         cmdScroll.target = 0
         cmdScroll:GetVBar():SetScroll(0)
         commandCount = 0
-        local query = string.Trim(string.lower(search:GetText() or ""))
+        local query = SearchLower(string.Trim(search:GetText() or ""))
 
         for _, item in ipairs(commandData) do
-            local haystack = string.lower(item.command .. " " .. item.description)
-            if query == "" or string.find(haystack, query, 1, true) then
+            if query == "" or string.find(item.search, query, 1, true) then
                 commandCount = commandCount + 1
                 local cw, ch = S(830), S(112)
                 local bw, bh = S(210), S(50)
                 local card = cmdLayout:Add("DPanel")
                 card:SetSize(cw, ch)
-                card:SetTooltip(item.description)
+                card:SetTooltip(item.tooltip)
                 card.born = cmdAnim + math.min(commandCount, 8) * 0.035
                 card.Think = function(s)
                     s:SetAlpha(255 * EA(SysTime() - s.born, 0.4))
                 end
 
                 local maxText = cw - bw - S(80)
-                local name = Fit(item.command, "E_item", maxText)
-                local description = Fit(item.description, "E_info", maxText)
+                local name = Fit(item.title, "E_item", maxText)
+                local description = Fit(item.command .. " — " .. item.description, "E_info", maxText)
                 card.Paint = function(s, w, h)
                     s.hv = Approach(s.hv or 0, (s:IsHovered() or s:IsChildHovered()) and 1 or 0, 14)
                     RBox(R(), 0, 0, w, h, Color(0, 0, 0, math.min(255, Cfg.cardAlpha + 40 * s.hv)))

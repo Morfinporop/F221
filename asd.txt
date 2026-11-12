@@ -1,6 +1,6 @@
 if SERVER then return end
 
-local BackOffset = 0
+local BackOffset = 128
 local BackKeepOnScreen = true
 
 local glowMat = Material("particle/Particle_Glow_04_Additive")
@@ -824,7 +824,7 @@ OpenMenu = function(startTab, instant)
                 local maxY = math.max(0, h - edgeH)
                 local outsetX = edgeW / 2 + S(128)
                 local outsetY = edgeH / 2 + S(128)
-                local shift = S(BackOffset)
+                local shift = S(256) - S(BackOffset)
                 local left = math.Clamp(bgX - outsetX, 0, maxX) + shift
                 local right = math.Clamp(bgX + bgW - edgeW + outsetX, 0, maxX) - shift
                 local top = math.Clamp(bgY - outsetY, 0, maxY) + shift

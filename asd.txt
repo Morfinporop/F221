@@ -1,6 +1,6 @@
 if SERVER then return end
 
-local BackOffset = 128
+local BackOffset = 0
 local BackKeepOnScreen = true
 
 local glowMat = Material("particle/Particle_Glow_04_Additive")
@@ -820,19 +820,20 @@ OpenMenu = function(startTab, instant)
             if iw > 0 and ih > 0 then
                 local fit = math.min(S(440) / iw, S(310) / ih)
                 local edgeW, edgeH = iw * fit, ih * fit
-                local outsetX = math.max(0, edgeW / 2 + S(BackOffset))
-                local outsetY = math.max(0, edgeH / 2 + S(BackOffset))
-                local left = bgX - outsetX
-                local right = bgX + bgW - edgeW + outsetX
-                local top = bgY - outsetY
-                local bottom = bgY + bgH - edgeH + outsetY
+                local maxX = math.max(0, w - edgeW)
+                local maxY = math.max(0, h - edgeH)
+                local outsetX = edgeW / 2 + S(128)
+                local outsetY = edgeH / 2 + S(128)
+                local shift = S(BackOffset)
+                local left = math.Clamp(bgX - outsetX, 0, maxX) + shift
+                local right = math.Clamp(bgX + bgW - edgeW + outsetX, 0, maxX) - shift
+                local top = math.Clamp(bgY - outsetY, 0, maxY) + shift
+                local bottom = math.Clamp(bgY + bgH - edgeH + outsetY, 0, maxY) - shift
                 if BackKeepOnScreen then
-                    local maxX = math.max(0, w - edgeW)
-                    local maxY = math.max(0, h - edgeH)
-                    left = math.Clamp(left, 0, maxX)
-                    right = math.Clamp(right, 0, maxX)
-                    top = math.Clamp(top, 0, maxY)
-                    bottom = math.Clamp(bottom, 0, maxY)
+                    left = math.Clamp(left, 0, maxX / 2)
+                    right = math.Clamp(right, maxX / 2, maxX)
+                    top = math.Clamp(top, 0, maxY / 2)
+                    bottom = math.Clamp(bottom, maxY / 2, maxY)
                 end
                 surface.SetMaterial(backMat)
                 surface.SetDrawColor(255, 255, 255, 255)
